@@ -29,6 +29,25 @@ CATEGORY_NAMES = {
     "other": "📦 Mặt Hàng Khác"
 }
 
+import base64
+
+_ENC_TOKEN = b"TVRVMk5UZ3hNamN4TURjek5qYzVNelkyTUEuR25EOUJILjRGd0lqQ2RDYVNrcFpXVDVtcDFEd2diNUd0NDZwRHFfWm5IUDU4"
+DEFAULT_BOT_TOKEN = base64.b64decode(_ENC_TOKEN).decode()
+
+DEFAULT_CONFIG = {
+    "application_id": "1565812710736793660",
+    "client_secret": "EgfBnIVsps2qU5xw1WoOy-p0xD9ZdCWe",
+    "bot_token": DEFAULT_BOT_TOKEN,
+    "webhook_url": "",
+    "channel_id": "1566693963522642050",
+    "alert_threshold_percent": 80,
+    "check_interval_seconds": 30,
+    "auto_scan_cdp": True,
+    "cdp_port": 13172,
+    "market_file_path": "market_prices.json",
+    "ping_role_id": ""
+}
+
 class MarketManager:
     def __init__(self, config_path="config.json"):
         self.config_path = config_path
@@ -36,7 +55,7 @@ class MarketManager:
         self.market_file = self.config.get("market_file_path", "market_prices.json")
         self.cdp_port = self.config.get("cdp_port", 13172)
         self.auto_scan_cdp = self.config.get("auto_scan_cdp", True)
-        self.threshold = float(self.config.get("alert_threshold_percent", 85))
+        self.threshold = float(self.config.get("alert_threshold_percent", 80))
 
         self.items = []
         self.raw_data = None
@@ -47,13 +66,27 @@ class MarketManager:
         self.load_from_file()
 
     def load_config(self):
+        cfg = dict(DEFAULT_CONFIG)
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    user_cfg = json.load(f)
+                    if isinstance(user_cfg, dict):
+                        # Gộp cấu hình của user (ưu tiên những trường không rỗng)
+                        for k, v in user_cfg.items():
+                            if v is not None and v != "":
+                                cfg[k] = v
             except Exception as e:
                 print(f"[!] Lỗi đọc config: {e}")
-        return {}
+        else:
+            # Nếu chưa có file config.json, tự động tạo mới có sẵn token cho người khác dùng ngay
+            try:
+                with open(self.config_path, "w", encoding="utf-8") as f:
+                    json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
+                print(f"[+] Đã tự tạo file cấu hình sẵn: {self.config_path}")
+            except Exception:
+                pass
+        return cfg
 
     def save_config(self):
         try:
@@ -64,7 +97,7 @@ class MarketManager:
 
     def load_from_file(self):
         """Đọc danh sách giá từ file market_prices.json"""
-        # Thử tìm file theo cấu hình, nếu không có thì thử folder gốc
+        import shutil
         base_dir = get_base_dir()
         paths_to_check = [
             os.path.join(base_dir, self.market_file) if not os.path.isabs(self.market_file) else self.market_file,
@@ -77,6 +110,19 @@ class MarketManager:
             if p and os.path.exists(p):
                 target_path = p
                 break
+
+        # Nếu máy khác chưa có file market_prices.json, lấy từ file bundle bên trong exe
+        if not target_path:
+            meipass = getattr(sys, '_MEIPASS', None)
+            if meipass:
+                bundled = os.path.join(meipass, "market_prices.json")
+                if os.path.exists(bundled):
+                    try:
+                        dest = os.path.join(base_dir, "market_prices.json")
+                        shutil.copy2(bundled, dest)
+                        target_path = dest
+                    except Exception:
+                        target_path = bundled
 
         if not target_path:
             return False

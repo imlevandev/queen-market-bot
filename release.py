@@ -63,11 +63,13 @@ def main():
     with open(VERSION_FILE, "w", encoding="utf-8") as f:
         f.write(original.replace(f'VERSION = "{cur_ver}"', f'VERSION = "{new_ver}"'))
 
-    print("\n[2/4] Đang đóng gói PyInstaller -> market_bot.exe...")
+    print("\n[2/4] Đang đóng gói PyInstaller -> market_bot.exe (chạy độc lập không cần Python)...")
     work = os.path.join(tempfile.gettempdir(), "marketbot-build")
     ok = run([
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--console",
         "--name", "market_bot",
+        "--add-data", f"{os.path.join(HERE, 'market_prices.json')};.",
+        "--add-data", f"{os.path.join(HERE, 'config.json')};.",
         "--collect-submodules", "websocket",
         "--collect-submodules", "discord",
         "--distpath", os.path.join(HERE, "dist"),
