@@ -1,0 +1,8 @@
+config.json
+market_prices.json
+dist/
+build/
+*.exe
+*.old
+*.new
+__pycache__/
