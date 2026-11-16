@@ -48,7 +48,9 @@ DEFAULT_CONFIG = {
     "cdp_port": 13172,
     "market_file_path": "market_prices.json",
     "ping_role_id": "",
-    "enabled_categories": ["all"]
+    "enabled_categories": ["all"],
+    "live_channel_id": "",
+    "live_message_id": ""
 }
 
 class MarketManager:
@@ -66,6 +68,15 @@ class MarketManager:
         self.price_history = {}      # {item_name: {"price": int, "ratio": float, "time": float}}
         self.last_alert_states = {}  # {item_name: {"price": int, "ratio": float, "time": float}}
         self._last_raw_str = None
+
+        # Dữ liệu thời gian thực từ FiveM
+        self.remaining_seconds = 0
+        self.server_time = None
+        self.maintenance = False
+        self.active_source = "Đang kết nối..."
+        self.last_sync_time = 0
+        self.latest_changes = []
+        self.last_detected_changes = []
 
         # Nạp dữ liệu ban đầu
         self.load_from_file()
@@ -228,7 +239,7 @@ class MarketManager:
         return processed
 
     def fetch_from_fivem_cdp(self):
-        """Kết nối FiveM qua port CEF 13172 để lấy dữ liệu thời gian thực trong RAM"""
+        """Kết nối FiveM qua port CEF 13172 để lấy dữ liệu thời gian thực từ game server"""
         if not self.auto_scan_cdp:
             return False
 
@@ -236,88 +247,134 @@ class MarketManager:
             url = f"http://127.0.0.1:{self.cdp_port}/json"
             req = urllib.request.urlopen(url, timeout=1.5)
             targets = json.loads(req.read().decode("utf-8"))
-            
+
             root_target = None
             for t in targets:
                 if "root.html" in t.get("url", ""):
                     root_target = t
                     break
-            
+
             if not root_target:
                 return False
 
             import websocket
             ws = websocket.WebSocket()
-            ws.connect(root_target["webSocketDebuggerUrl"], suppress_origin=True, timeout=3.0)
+            ws.connect(root_target["webSocketDebuggerUrl"], suppress_origin=True, timeout=2.5)
 
-            # Đọc trực tiếp từ React Fiber Store của queen_market trong RAM
-            js_query = """(() => {
-                const qm = window.frames['queen_market'];
-                if (!qm) return null;
-                const rootEl = qm.document.getElementById('root');
-                if (!rootEl) return null;
-                const rKey = Object.keys(rootEl).find(k => k.startsWith('__reactContainer') || k.startsWith('__reactFiber'));
-                if (!rKey) return null;
-                let fiber = rootEl[rKey];
+            raw_items = None
 
-                let queue = [fiber];
-                let visited = 0;
-                while (queue.length > 0 && visited < 1500) {
-                    let node = queue.shift();
-                    visited++;
-                    if (!node) continue;
-
-                    let ms = node.memoizedState;
-                    while (ms) {
-                        let st = ms.memoizedState;
-                        if (st && typeof st === 'object' && !Array.isArray(st)) {
-                            const keys = Object.keys(st);
-                            if (keys.length > 10 && st[keys[0]] && st[keys[0]].Price !== undefined) {
-                                return Object.values(st);
-                            }
-                            if ((st.potato && st.potato.Price !== undefined) || (st.ls_gold_ingot && st.ls_gold_ingot.Price !== undefined)) {
-                                return Object.values(st);
-                            }
-                        }
-                        ms = ms.next;
-                    }
-                    if (node.child) queue.push(node.child);
-                    if (node.sibling) queue.push(node.sibling);
+            # CƠ CHẾ 1 (CHÍNH XÁC & CHỦ ĐỘNG): Gọi trực tiếp NUI endpoint getMobilePrices
+            # Đây là endpoint game dùng để lấy 100% giá từ server kèm remainingSeconds đếm ngược
+            nui_js = """(async () => {
+                try {
+                    const qm = window.frames['queen_market'];
+                    if (!qm) return { error: 'no_frame' };
+                    const resp = await qm.fetch('https://queen_market/getMobilePrices', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json; charset=UTF-8'},
+                        body: '{}'
+                    });
+                    const d = await resp.json();
+                    return { success: true, payload: d };
+                } catch(e) {
+                    return { error: e.toString() };
                 }
-                return null;
             })()"""
 
-            ws.send(json.dumps({
-                "id": 888,
-                "method": "Runtime.evaluate",
-                "params": {"expression": js_query, "returnByValue": True}
-            }))
-            
-            resp = json.loads(ws.recv())
+            try:
+                ws.send(json.dumps({
+                    "id": 999,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": nui_js, "awaitPromise": True, "returnByValue": True}
+                }))
+                nui_resp = json.loads(ws.recv())
+                nui_val = nui_resp.get("result", {}).get("result", {}).get("value")
+                if isinstance(nui_val, dict) and nui_val.get("success"):
+                    payload = nui_val.get("payload", {})
+                    if isinstance(payload, dict):
+                        raw_items = payload.get("data") or payload.get("items")
+                        self.remaining_seconds = int(payload.get("remainingSeconds", 0))
+                        self.maintenance = payload.get("maintenance", False)
+                        meta = payload.get("meta", {})
+                        if isinstance(meta, dict):
+                            self.server_time = meta.get("serverTime")
+                    elif isinstance(payload, list):
+                        raw_items = payload
+                    self.active_source = f"FiveM Live (Port {self.cdp_port})"
+            except Exception:
+                pass
+
+            # CƠ CHẾ 2 (FALLBACK): Nếu NUI không phản hồi, quét React Fiber Store trong RAM
+            if not raw_items:
+                fiber_js = """(() => {
+                    const qm = window.frames['queen_market'];
+                    if (!qm) return null;
+                    const rootEl = qm.document.getElementById('root');
+                    if (!rootEl) return null;
+                    const rKey = Object.keys(rootEl).find(k => k.startsWith('__reactContainer') || k.startsWith('__reactFiber'));
+                    if (!rKey) return null;
+                    let queue = [rootEl[rKey]];
+                    let visited = 0;
+                    while (queue.length > 0 && visited < 1500) {
+                        let node = queue.shift();
+                        visited++;
+                        if (!node) continue;
+                        let ms = node.memoizedState;
+                        while (ms) {
+                            let st = ms.memoizedState;
+                            if (st && typeof st === 'object' && !Array.isArray(st)) {
+                                const keys = Object.keys(st);
+                                if (keys.length > 10 && st[keys[0]] && st[keys[0]].Price !== undefined) {
+                                    return Object.values(st);
+                                }
+                                if ((st.potato && st.potato.Price !== undefined) || (st.ls_gold_ingot && st.ls_gold_ingot.Price !== undefined)) {
+                                    return Object.values(st);
+                                }
+                            }
+                            ms = ms.next;
+                        }
+                        if (node.child) queue.push(node.child);
+                        if (node.sibling) queue.push(node.sibling);
+                    }
+                    return null;
+                })()"""
+
+                try:
+                    ws.send(json.dumps({
+                        "id": 888,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": fiber_js, "returnByValue": True}
+                    }))
+                    resp = json.loads(ws.recv())
+                    market_data = resp.get("result", {}).get("result", {}).get("value")
+                    if market_data:
+                        raw_items = market_data if isinstance(market_data, list) else market_data.get("items", [])
+                        self.active_source = f"FiveM Fiber (Port {self.cdp_port})"
+                except Exception:
+                    pass
+
             ws.close()
 
-            market_data = resp.get("result", {}).get("result", {}).get("value")
-            if market_data:
-                raw_items = market_data if isinstance(market_data, list) else market_data.get("items", [])
-                if raw_items:
-                    self.items = self._process_items(raw_items)
-                    raw_str = json.dumps(raw_items)
-                    if self._last_raw_str != raw_str:
-                        self._last_raw_str = raw_str
-                        # Chỉ ghi file khi dữ liệu thực sự có biến động
-                        save_path = os.path.join(get_base_dir(), "market_prices.json")
-                        try:
-                            with open(save_path, "w", encoding="utf-8") as f:
-                                json.dump(raw_items, f, indent=2, ensure_ascii=False)
-                        except Exception:
-                            pass
-                        # Đồng bộ sang codeminigame nếu có
-                        try:
-                            with open(r"E:\codeminigame\market_prices.json", "w", encoding="utf-8") as f:
-                                json.dump(raw_items, f, indent=2, ensure_ascii=False)
-                        except Exception:
-                            pass
-                    return True
+            if raw_items:
+                self.items = self._process_items(raw_items)
+                self.last_sync_time = time.time()
+                raw_str = json.dumps(raw_items)
+                if self._last_raw_str != raw_str:
+                    self._last_raw_str = raw_str
+                    # Chỉ ghi file khi dữ liệu thực sự có biến động
+                    save_path = os.path.join(get_base_dir(), "market_prices.json")
+                    try:
+                        with open(save_path, "w", encoding="utf-8") as f:
+                            json.dump(raw_items, f, indent=2, ensure_ascii=False)
+                    except Exception:
+                        pass
+                    # Đồng bộ sang codeminigame nếu có
+                    try:
+                        with open(r"E:\codeminigame\market_prices.json", "w", encoding="utf-8") as f:
+                            json.dump(raw_items, f, indent=2, ensure_ascii=False)
+                    except Exception:
+                        pass
+                return True
         except Exception:
             pass
         return False
@@ -326,7 +383,8 @@ class MarketManager:
         """Cập nhật giá từ FiveM (nếu đang bật game) hoặc từ file json"""
         updated_cdp = self.fetch_from_fivem_cdp()
         if not updated_cdp:
-            self.load_from_file()
+            loaded = self.load_from_file()
+            self.active_source = "File JSON" if loaded else "Không có dữ liệu"
 
     def get_all_items(self):
         self.update()
@@ -400,11 +458,10 @@ class MarketManager:
         if not hasattr(self, "price_history"):
             self.price_history = {}
 
+        self.last_detected_changes = []
+
         for it in self.items:
             cat = it.get("category")
-            if enabled_cats and "all" not in enabled_cats and cat not in enabled_cats:
-                continue
-
             item_name = it["itemName"]
             price = it["Price"]
             max_price = it["Max"]
@@ -415,14 +472,38 @@ class MarketManager:
             if prev is None:
                 self.price_history[item_name] = {"price": price, "ratio": ratio, "time": now}
                 if max_price > 0 and ratio >= thresh:
-                    it_copy = dict(it)
-                    it_copy["alert_type"] = "MAX" if ratio >= 100 else "NEAR_MAX"
-                    alerts.append(it_copy)
-                    self.last_alert_states[item_name] = {"price": price, "ratio": ratio, "time": now}
+                    if not (enabled_cats and "all" not in enabled_cats and cat not in enabled_cats):
+                        it_copy = dict(it)
+                        it_copy["alert_type"] = "MAX" if ratio >= 100 else "NEAR_MAX"
+                        alerts.append(it_copy)
+                        self.last_alert_states[item_name] = {"price": price, "ratio": ratio, "time": now}
                 continue
 
             prev_price = prev["price"]
             prev_ratio = prev["ratio"]
+
+            # GHI NHẬN BIẾN ĐỘNG GIÁ THỰC TẾ TRONG GAME
+            if price != prev_price:
+                diff = price - prev_price
+                change_record = {
+                    "itemName": item_name,
+                    "Label": it["Label"],
+                    "category": cat,
+                    "old_price": prev_price,
+                    "new_price": price,
+                    "diff": diff,
+                    "ratio": ratio,
+                    "time": now
+                }
+                self.last_detected_changes.append(change_record)
+                self.latest_changes.insert(0, change_record)
+                if len(self.latest_changes) > 20:
+                    self.latest_changes = self.latest_changes[:20]
+
+            # Kiểm tra bộ lọc danh mục cho thông báo alert
+            if enabled_cats and "all" not in enabled_cats and cat not in enabled_cats:
+                self.price_history[item_name] = {"price": price, "ratio": ratio, "time": now}
+                continue
 
             # TRƯỜNG HỢP 1: BỊ TỤT GIÁ (Ví dụ vừa bán xong bị tụt giá)
             if price < prev_price:

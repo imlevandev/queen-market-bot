@@ -199,6 +199,78 @@ def format_max_list(items, enabled_cats=None):
             lines.append(f"• {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}${buff_str} — {make_progress_bar(it['Ratio'], 8)}")
         return "\n".join(lines)
 
+def format_live_dashboard(market):
+    """Định dạng Bảng Điện Tử Thị Trường Live (Realtime tự động nhảy số)"""
+    items = market.get_all_items()
+    now_str = datetime.now().strftime("%H:%M:%S")
+    rem_sec = getattr(market, "remaining_seconds", 0)
+    if rem_sec > 0:
+        mins = rem_sec // 60
+        secs = rem_sec % 60
+        timer_str = f"⏱️ **Đổi giá sau:** `{mins:02d}m {secs:02d}s`"
+    else:
+        timer_str = "⏱️ **Đổi giá:** `Đang cập nhật...`"
+
+    src_label = "🟢 **FiveM Realtime**" if "FiveM" in market.active_source else f"📁 **Offline ({market.active_source})**"
+
+    # 1. Các món chạm đỉnh MAX (>= 100%)
+    max_items = [it for it in items if it.get("Ratio", 0) >= 100]
+    max_items.sort(key=lambda x: x["Price"], reverse=True)
+
+    # 2. Các món sát MAX (80% -> 99%)
+    near_items = [it for it in items if 80 <= it.get("Ratio", 0) < 100]
+    near_items.sort(key=lambda x: x["Ratio"], reverse=True)
+
+    lines = [
+        "╔══════════════════════════════════════════╗",
+        "║ 📊 **BẢNG ĐIỆN TỬ THỊ TRƯỜNG CHỢ LIVE (REALTIME)** ║",
+        "╚══════════════════════════════════════════╝",
+        f"{src_label} | {timer_str} | 🕒 `{now_str}`",
+        ""
+    ]
+
+    if max_items:
+        lines.append(f"🚨 **ĐÃ CHẠM ĐỈNH MAX 100% ({len(max_items)} món) — BÁN NGAY KẺO TỤT:**")
+        for it in max_items[:6]:
+            _, c_icon = get_cat_tag_and_icon(it.get("category"))
+            cat_pct = it.get("CategoryPercent", 0)
+            buff_str = f" *(+{int(cat_pct)}% Buff)*" if cat_pct > 0 else ""
+            lines.append(f"• {c_icon} **{it['Label']}**: **{it['Price']:,}$** / Max {it['Max']:,}${buff_str} ➔ `100%`")
+        lines.append("")
+
+    if near_items:
+        lines.append(f"⚡ **SÁT ĐỈNH (80% - 99% MAX) ({len(near_items)} món):**")
+        for it in near_items[:8]:
+            _, c_icon = get_cat_tag_and_icon(it.get("category"))
+            trend = "📈" if it.get("Status") == "up" else ("📉" if it.get("Status") == "down" else "➖")
+            cat_pct = it.get("CategoryPercent", 0)
+            buff_str = f" *(+{int(cat_pct)}% Buff)*" if cat_pct > 0 else ""
+            lines.append(f"• {c_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}${buff_str} | {trend} — {make_progress_bar(it['Ratio'], 6)}")
+        lines.append("")
+    elif not max_items:
+        top_items = sorted(items, key=lambda x: x.get("Ratio", 0), reverse=True)[:6]
+        lines.append("📊 **TOP MẶT HÀNG CAO NHẤT HIỆN TẠI:**")
+        for it in top_items:
+            _, c_icon = get_cat_tag_and_icon(it.get("category"))
+            cat_pct = it.get("CategoryPercent", 0)
+            buff_str = f" *(+{int(cat_pct)}% Buff)*" if cat_pct > 0 else ""
+            lines.append(f"• {c_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}${buff_str} — {make_progress_bar(it['Ratio'], 6)}")
+        lines.append("")
+
+    # Biến động gần đây
+    latest = getattr(market, "latest_changes", [])
+    if latest:
+        lines.append("📈 **BIẾN ĐỘNG GIÁ MỚI NHẤT TRONG GAME:**")
+        for ch in latest[:4]:
+            diff = ch['diff']
+            d_str = f"+{diff:,}$" if diff > 0 else f"{diff:,}$"
+            icon = "🟢" if diff > 0 else "🔴"
+            lines.append(f"{icon} **{ch['Label']}**: {ch['old_price']:,}$ ➔ **{ch['new_price']:,}$** (`{d_str}`)")
+        lines.append("")
+
+    lines.append("💡 *Bảng này tự động nhảy số liên tục theo game FiveM. Gõ `!banggia` để xem tất cả.*")
+    return "\n".join(lines)
+
 async def send_webhook_alert(webhook_url, content):
     """Gửi cảnh báo qua Discord Webhook nếu cấu hình webhook"""
     try:
@@ -211,6 +283,10 @@ async def send_webhook_alert(webhook_url, content):
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
+_last_dashboard_edit = 0
+_last_dashboard_content = ""
+_heartbeat_counter = 0
+
 @bot.event
 async def on_ready():
     print("=" * 60)
@@ -221,6 +297,10 @@ async def on_ready():
     print(f"[+] Chế độ: THEO DÕI TOÀN BỘ GIÁ THỊ TRƯỜNG (Tất cả mặt hàng từ 80% đến 100% MAX)")
     print(f"[+] Danh mục theo dõi: {cats}")
     print(f"[+] Chu kỳ quét thị trường: {market.config.get('check_interval_seconds', 3)}s (quét liên tục realtime)")
+    live_ch = market.config.get("live_channel_id")
+    live_msg = market.config.get("live_message_id")
+    if live_ch and live_msg:
+        print(f"[+] Bảng điện tử Live Market đang ghim tại kênh ID {live_ch} (Message ID: {live_msg})")
     print("=" * 60, flush=True)
 
     try:
@@ -250,8 +330,46 @@ async def on_ready():
 # Tác vụ chạy ngầm kiểm tra giá định kỳ (Quét liên tục realtime mỗi 3 giây)
 @tasks.loop(seconds=market.config.get("check_interval_seconds", 3))
 async def auto_price_monitor():
+    global _last_dashboard_edit, _last_dashboard_content, _heartbeat_counter
     try:
+        now = time.time()
+        now_str = datetime.now().strftime("%H:%M:%S")
+
+        # Quét thị trường FiveM realtime
         alerts = market.check_for_alerts()
+        changes = getattr(market, "last_detected_changes", [])
+        rem = getattr(market, "remaining_seconds", 0)
+
+        # 1. In log console đều đặn để người dùng biết bot đang get dữ liệu liên tục
+        if changes:
+            ch_strs = [f"{c['Label']} ({c['diff']:+,}$)" for c in changes[:4]]
+            print(f"[*] [{now_str}] [{market.active_source}] ⚡ {len(changes)} món biến động: {', '.join(ch_strs)} | Reset sau: {rem}s", flush=True)
+        else:
+            _heartbeat_counter += 1
+            if _heartbeat_counter % 5 == 0:  # Mỗi ~15 giây in 1 log nhịp tim
+                max_count = len(market.get_max_items(filter_category=False))
+                print(f"[*] [{now_str}] [{market.active_source}] Đang quét realtime... ({len(market.items)} món | Reset sau: {rem}s | {max_count} món MAX)", flush=True)
+
+        # 2. Tự động cập nhật Bảng Điện Tử Live trên Discord (nếu đã kích hoạt qua !live)
+        live_ch_id = market.config.get("live_channel_id")
+        live_msg_id = market.config.get("live_message_id")
+        if live_ch_id and live_msg_id:
+            # Cập nhật khi có giá đổi HOẶC mỗi 6-8 giây để cập nhật đồng hồ đếm ngược
+            if changes or (now - _last_dashboard_edit >= 6):
+                try:
+                    target_ch = bot.get_channel(int(live_ch_id)) or await bot.fetch_channel(int(live_ch_id))
+                    if target_ch:
+                        dash_content = format_live_dashboard(market)
+                        if dash_content != _last_dashboard_content:
+                            msg_obj = await target_ch.fetch_message(int(live_msg_id))
+                            if msg_obj:
+                                await msg_obj.edit(content=dash_content)
+                                _last_dashboard_content = dash_content
+                                _last_dashboard_edit = now
+                except Exception:
+                    pass
+
+        # 3. Gửi tin nhắn cảnh báo Alert (Món chạm 100% MAX hoặc bị tụt giá)
         if not alerts:
             return
 
@@ -259,7 +377,7 @@ async def auto_price_monitor():
         webhook_url = market.config.get("webhook_url")
         role_id = market.config.get("ping_role_id")
 
-        print(f"[*] [{datetime.now().strftime('%H:%M:%S')}] Phát hiện {len(alerts)} biến động thị trường (Toàn bộ mặt hàng)!", flush=True)
+        print(f"[*] [{now_str}] Gửi cảnh báo: {len(alerts)} mặt hàng tới Discord!", flush=True)
 
         if len(alerts) > 3:
             # Gộp thành 1 danh sách gọn gàng nếu nhiều món cùng lúc
@@ -363,6 +481,43 @@ async def cmd_setchannel(ctx):
     market.config["channel_id"] = ch_id
     market.save_config()
     await ctx.send(f"✅ Đã đặt kênh <#{ch_id}> làm kênh nhận **Thông Báo Giá Tự Động**!")
+
+# --- LỆNH BẢNG ĐIỆN TỬ THỊ TRƯỜNG LIVE (REALTIME DASHBOARD) ---
+@bot.command(name="live", aliases=["dashboard", "bangdien", "banglive"])
+@commands.has_permissions(administrator=True)
+async def cmd_live(ctx):
+    """Tạo và ghim Bảng Điện Tử Thị Trường Live (tự động cập nhật nhảy giá liên tục)"""
+    global _last_dashboard_content, _last_dashboard_edit
+    market.update()
+    content = format_live_dashboard(market)
+    msg = await ctx.send(content)
+    market.config["live_channel_id"] = str(ctx.channel.id)
+    market.config["live_message_id"] = str(msg.id)
+    market.save_config()
+    _last_dashboard_content = content
+    _last_dashboard_edit = time.time()
+    await ctx.send("✅ **Đã kích hoạt Bảng Điện Tử Thị Trường Live!** Bảng trên sẽ tự động cập nhật số liệu và đếm ngược liên tục từng giây như trong game FiveM.")
+
+@bot.command(name="stoplive", aliases=["tatlive"])
+@commands.has_permissions(administrator=True)
+async def cmd_stoplive(ctx):
+    """Tắt chế độ tự động cập nhật Bảng Điện Tử Live"""
+    market.config["live_channel_id"] = ""
+    market.config["live_message_id"] = ""
+    market.save_config()
+    await ctx.send("⏹️ **Đã tắt tự động cập nhật Bảng Điện Tử Live.**")
+
+@bot.command(name="timer", aliases=["demnguoc", "time", "reset"])
+async def cmd_timer(ctx):
+    """Xem thời gian còn lại đến đợt đổi giá tiếp theo của FiveM"""
+    market.update()
+    rem = getattr(market, "remaining_seconds", 0)
+    if rem > 0:
+        mins = rem // 60
+        secs = rem % 60
+        await ctx.send(f"⏱️ **Đếm ngược thị trường FiveM:** Còn **{mins:02d} phút {secs:02d} giây** (`{rem}s`) đến đợt đổi giá tiếp theo!\n🟢 Nguồn: `{market.active_source}`")
+    else:
+        await ctx.send(f"⏱️ **Thị trường FiveM:** Đang trong chu kỳ tính toán giá mới.\n🟢 Nguồn: `{market.active_source}`")
 
 # --- LỆNH XEM BẢNG GIÁ TOÀN BỘ CÁC MẶT HÀNG ---
 @bot.command(name="banggia", aliases=["bangia", "all", "toanbo", "market"])
@@ -531,6 +686,9 @@ async def cmd_help(ctx):
     """Xem danh sách hướng dẫn lệnh"""
     help_text = (
         "🤖 **DANH SÁCH LỆNH BOT BÁO GIÁ QUEEN MARKET:**\n"
+        "• `!live` (hoặc `/live`): **Bật Bảng Điện Tử Live** — Tin nhắn tự nhảy giá & đếm ngược liên tục như trong game!\n"
+        "• `!stoplive`: Tắt tự động cập nhật bảng điện tử live\n"
+        "• `!timer` (hoặc `/timer`): Đếm ngược thời gian đến đợt đổi giá tiếp theo của FiveM\n"
         "• `!banggia` (hoặc `/banggia`, `!all`): Xem bảng giá **toàn bộ tất cả mặt hàng** trên thị trường\n"
         "• `!go` (hoặc `/go`): Xem bảng giá toàn bộ mặt hàng Gỗ\n"
         "• `!da` (hoặc `/da`): Xem bảng giá toàn bộ mặt hàng Đá/Quặng/Thỏi kim loại\n"
@@ -547,6 +705,38 @@ async def cmd_help(ctx):
     await ctx.send(help_text)
 
 # ==================== SLASH COMMANDS (/) ====================
+
+@bot.tree.command(name="live", description="Bật Bảng Điện Tử Thị Trường Live (Tự động nhảy giá liên tục như trong game)")
+async def slash_live(interaction: discord.Interaction):
+    global _last_dashboard_content, _last_dashboard_edit
+    market.update()
+    content = format_live_dashboard(market)
+    await interaction.response.send_message(content)
+    msg = await interaction.original_response()
+    market.config["live_channel_id"] = str(interaction.channel_id)
+    market.config["live_message_id"] = str(msg.id)
+    market.save_config()
+    _last_dashboard_content = content
+    _last_dashboard_edit = time.time()
+    await interaction.followup.send("✅ **Đã kích hoạt Bảng Điện Tử Thị Trường Live!** Bảng trên sẽ tự động cập nhật số liệu và đếm ngược liên tục từng giây như trong game FiveM.", ephemeral=True)
+
+@bot.tree.command(name="stoplive", description="Tắt cập nhật Bảng Điện Tử Thị Trường Live")
+async def slash_stoplive(interaction: discord.Interaction):
+    market.config["live_channel_id"] = ""
+    market.config["live_message_id"] = ""
+    market.save_config()
+    await interaction.response.send_message("⏹️ **Đã tắt tự động cập nhật Bảng Điện Tử Live.**", ephemeral=True)
+
+@bot.tree.command(name="timer", description="Xem thời gian đếm ngược đến đợt đổi giá tiếp theo của FiveM")
+async def slash_timer(interaction: discord.Interaction):
+    market.update()
+    rem = getattr(market, "remaining_seconds", 0)
+    if rem > 0:
+        mins = rem // 60
+        secs = rem % 60
+        await interaction.response.send_message(f"⏱️ **Đếm ngược thị trường FiveM:** Còn **{mins:02d} phút {secs:02d} giây** (`{rem}s`) đến đợt đổi giá tiếp theo!\n🟢 Nguồn: `{market.active_source}`")
+    else:
+        await interaction.response.send_message(f"⏱️ **Thị trường FiveM:** Đang trong chu kỳ tính toán giá mới.\n🟢 Nguồn: `{market.active_source}`")
 
 @bot.tree.command(name="gia", description="Tra cứu giá vật phẩm (VD: sat, vang, nam dui ga)")
 @app_commands.describe(ten_vat_pham="Tên vật phẩm cần tra")
