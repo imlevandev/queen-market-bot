@@ -172,22 +172,35 @@ def format_all_categories_table(items):
         all_chunks.append("\n".join(current_lines))
     return all_chunks
 
-def format_max_list(items, enabled_cats=None):
+def format_max_list_chunks(items, enabled_cats=None):
     if enabled_cats and "all" not in enabled_cats:
         items = [it for it in items if it.get("category") in enabled_cats]
 
     matched = [it for it in items if it.get("Ratio", 0) >= 80]
     matched.sort(key=lambda x: x["Ratio"], reverse=True)
     if matched:
-        lines = [f"🔥 **DANH SÁCH MẶT HÀNG TỪ 80% ĐẾN 100% MAX ({len(matched)} MÓN):**"]
+        all_chunks = []
+        current_lines = [f"🔥 **DANH SÁCH MẶT HÀNG TỪ 80% ĐẾN 100% MAX ({len(matched)} MÓN):**"]
+        current_len = len(current_lines[0])
         for it in matched:
             icon = "🚨" if it["Ratio"] >= 100 else "⚡"
             cat = it.get("category")
             _, cat_icon = get_cat_tag_and_icon(cat)
             cat_pct = it.get("CategoryPercent", 0)
             buff_str = f" *(+{int(cat_pct)}% Buff)*" if cat_pct > 0 else ""
-            lines.append(f"{icon} {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}${buff_str} — {make_progress_bar(it['Ratio'], 8)}")
-        return "\n".join(lines)
+            line = f"{icon} {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}${buff_str} — {make_progress_bar(it['Ratio'], 8)}"
+
+            if current_len + len(line) + 2 > 1850:
+                all_chunks.append("\n".join(current_lines))
+                current_lines = [line]
+                current_len = len(line)
+            else:
+                current_lines.append(line)
+                current_len += len(line) + 1
+
+        if current_lines:
+            all_chunks.append("\n".join(current_lines))
+        return all_chunks
     else:
         top_items = sorted(items, key=lambda x: x.get("Ratio", 0), reverse=True)[:8]
         lines = ["⚠️ **Chưa có mặt hàng nào đạt mốc 80% MAX.**\n📊 **Top các món gần MAX nhất thị trường hiện tại:**"]
@@ -197,7 +210,11 @@ def format_max_list(items, enabled_cats=None):
             cat_pct = it.get("CategoryPercent", 0)
             buff_str = f" *(+{int(cat_pct)}% Buff)*" if cat_pct > 0 else ""
             lines.append(f"• {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}${buff_str} — {make_progress_bar(it['Ratio'], 8)}")
-        return "\n".join(lines)
+        return ["\n".join(lines)]
+
+def format_max_list(items, enabled_cats=None):
+    chunks = format_max_list_chunks(items, enabled_cats=enabled_cats)
+    return chunks[0] if chunks else ""
 
 def format_live_dashboard(market):
     """Định dạng Bảng Điện Tử Thị Trường Live (Realtime tự động nhảy số)"""
@@ -380,34 +397,51 @@ async def auto_price_monitor():
         print(f"[*] [{now_str}] Gửi cảnh báo: {len(alerts)} mặt hàng tới Discord!", flush=True)
 
         if len(alerts) > 3:
-            # Gộp thành 1 danh sách gọn gàng nếu nhiều món cùng lúc
-            lines = [f"⚡ **BIẾN ĐỘNG THỊ TRƯỜNG TOÀN BỘ ({len(alerts)} thông báo mới):**"]
+            # Gộp thành các tin nhắn gọn gàng (chia chunk <= 1850 ký tự để không vượt quá giới hạn 2000 của Discord)
+            chunks = []
+            current_lines = [f"⚡ **BIẾN ĐỘNG THỊ TRƯỜNG TOÀN BỘ ({len(alerts)} thông báo mới):**"]
+            current_len = len(current_lines[0])
+
             for it in alerts:
                 at = it.get("alert_type")
                 cat = it.get("category")
                 _, cat_icon = get_cat_tag_and_icon(cat)
                 diff = it.get("price_diff", 0)
                 if at == "PRICE_DROP":
-                    lines.append(f"📉 {cat_icon} **{it['Label']}**: Vừa tụt {it.get('prev_price'):,}$ ➔ {it['Price']:,}$ (`{diff:+,}$`) — {make_progress_bar(it['Ratio'], 6)}")
+                    line = f"📉 {cat_icon} **{it['Label']}**: Vừa tụt {it.get('prev_price'):,}$ ➔ {it['Price']:,}$ (`{diff:+,}$`) — {make_progress_bar(it['Ratio'], 6)}"
                 elif at == "DROP_BELOW_80":
-                    lines.append(f"⚠️ {cat_icon} **{it['Label']}**: Tụt dưới 80% (còn {it['Price']:,}$) — {make_progress_bar(it['Ratio'], 6)}")
+                    line = f"⚠️ {cat_icon} **{it['Label']}**: Tụt dưới 80% (còn {it['Price']:,}$) — {make_progress_bar(it['Ratio'], 6)}"
                 elif it["Ratio"] >= 100:
-                    lines.append(f"🚨 {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 6)}")
+                    line = f"🚨 {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 6)}"
                 else:
-                    lines.append(f"🔥 {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 6)}")
-            summary_msg = "\n".join(lines)
+                    line = f"🔥 {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 6)}"
+
+                if current_len + len(line) + 2 > 1850:
+                    chunks.append("\n".join(current_lines))
+                    current_lines = [line]
+                    current_len = len(line)
+                else:
+                    current_lines.append(line)
+                    current_len += len(line) + 1
+
+            if current_lines:
+                chunks.append("\n".join(current_lines))
 
             if channel_id:
                 try:
                     ch_int = int(channel_id)
                     target_ch = bot.get_channel(ch_int) or await bot.fetch_channel(ch_int)
                     if target_ch:
-                        await target_ch.send(summary_msg)
+                        for chunk in chunks:
+                            await target_ch.send(chunk)
+                            await asyncio.sleep(0.5)
                 except Exception as e:
                     print(f"[!] Lỗi gửi vào channel {channel_id}: {e}", flush=True)
 
             if webhook_url:
-                await send_webhook_alert(webhook_url, content=summary_msg)
+                for chunk in chunks:
+                    await send_webhook_alert(webhook_url, content=chunk)
+                    await asyncio.sleep(0.5)
         else:
             # Gửi từng thẻ gọn gàng nếu chỉ có 1-3 món
             for it in alerts:
@@ -463,7 +497,9 @@ async def cmd_max(ctx):
     """Xem danh sách các mặt hàng đã chạm max hoặc gần max (toàn bộ thị trường)"""
     items = market.get_all_items()
     cats = market.config.get("enabled_categories")
-    await ctx.send(format_max_list(items, enabled_cats=cats))
+    chunks = format_max_list_chunks(items, enabled_cats=cats)
+    for c in chunks:
+        await ctx.send(c)
 
 @bot.command(name="check", aliases=["kiemtra", "scan"])
 async def cmd_check(ctx):
@@ -471,7 +507,10 @@ async def cmd_check(ctx):
     market.update()
     items = market.get_all_items()
     cats = market.config.get("enabled_categories")
-    await ctx.send("🔄 **Đã cập nhật thị trường!**\n" + format_max_list(items, enabled_cats=cats))
+    chunks = format_max_list_chunks(items, enabled_cats=cats)
+    await ctx.send("🔄 **Đã cập nhật thị trường!**")
+    for c in chunks:
+        await ctx.send(c)
 
 @bot.command(name="kenh", aliases=["setchannel"])
 @commands.has_permissions(administrator=True)
@@ -760,14 +799,20 @@ async def slash_gia(interaction: discord.Interaction, ten_vat_pham: str):
 async def slash_max(interaction: discord.Interaction):
     items = market.get_all_items()
     cats = market.config.get("enabled_categories")
-    await interaction.response.send_message(format_max_list(items, enabled_cats=cats))
+    chunks = format_max_list_chunks(items, enabled_cats=cats)
+    await interaction.response.send_message(chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
 
 @bot.tree.command(name="kiemtra", description="Kiểm tra và đồng bộ thị trường ngay lập tức")
 async def slash_check(interaction: discord.Interaction):
     market.update()
     items = market.get_all_items()
     cats = market.config.get("enabled_categories")
-    await interaction.response.send_message("🔄 **Đã cập nhật thị trường!**\n" + format_max_list(items, enabled_cats=cats))
+    chunks = format_max_list_chunks(items, enabled_cats=cats)
+    await interaction.response.send_message("🔄 **Đã cập nhật thị trường!**\n" + chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
 
 def main():
     # 1. Kiểm tra và tự động cập nhật nếu có bản mới trên GitHub
