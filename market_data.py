@@ -19,13 +19,15 @@ def strip_accents(text: str) -> str:
     return text.replace('đ', 'd').replace('Đ', 'D').lower().strip()
 
 CATEGORY_NAMES = {
-    "mining": "⛏️ Khai Thác Khoáng Sản",
-    "fishing": "🎣 Đánh Bắt Thủy Hải Sản",
+    "lumberjack": "🪓 Đốn Gỗ & Lâm Nghiệp (Gỗ)",
+    "mining": "⛏️ Khai Thác Khoáng Sản (Đá & Quặng)",
+    "fishing": "🎣 Đánh Bắt Thủy Hải Sản (Cá)",
     "farming": "🌾 Trồng Trọt & Nông Sản",
+    "mushrooms": "🍄 Thu Hoạch Nấm",
     "mushroom": "🍄 Thu Hoạch Nấm",
-    "hunting": "🏹 Săn Bắn Động Vật",
-    "lumberjack": "🪓 Đốn Gỗ & Lâm Nghiệp",
+    "materials": "🧱 Vật Liệu & Chế Tạo",
     "crafting": "🛠️ Chế Biến & Gia Công",
+    "hunting": "🏹 Săn Bắn Động Vật",
     "other": "📦 Mặt Hàng Khác"
 }
 
@@ -41,11 +43,12 @@ DEFAULT_CONFIG = {
     "webhook_url": "",
     "channel_id": "1566693963522642050",
     "alert_threshold_percent": 80,
-    "check_interval_seconds": 30,
+    "check_interval_seconds": 3,
     "auto_scan_cdp": True,
     "cdp_port": 13172,
     "market_file_path": "market_prices.json",
-    "ping_role_id": ""
+    "ping_role_id": "",
+    "enabled_categories": ["all"]
 }
 
 class MarketManager:
@@ -60,7 +63,9 @@ class MarketManager:
         self.items = []
         self.raw_data = None
         self.last_file_mtime = 0
-        self.last_alert_states = {}  # {item_name: {"price": int, "state": "MAX"|"NEAR_MAX", "time": float}}
+        self.price_history = {}      # {item_name: {"price": int, "ratio": float, "time": float}}
+        self.last_alert_states = {}  # {item_name: {"price": int, "ratio": float, "time": float}}
+        self._last_raw_str = None
 
         # Nạp dữ liệu ban đầu
         self.load_from_file()
@@ -154,11 +159,35 @@ class MarketManager:
     def _process_items(self, raw_items):
         processed = []
         for it in raw_items:
+            cat_percent = float(it.get("CategoryPercent", 0) or 0)
+            multiplier = 1.0 + (cat_percent / 100.0)
+
             price = int(it.get("Price", 0))
-            max_price = int(it.get("Max", 0))
-            min_price = int(it.get("Min", 0))
+            market_price = int(it.get("MarketPrice", price))
+
+            base_max = int(it.get("Max", 0))
+            base_min = int(it.get("Min", 0))
             base_price = int(it.get("BasePrice", 0))
-            ratio = (price / max_price * 100) if max_price > 0 else 0
+
+            # Nếu có CategoryPercent buff (ví dụ nghề Gỗ đang có buff event +50%):
+            # Giá Max và Min người chơi bán được thực tế cũng được nhân theo buff
+            if cat_percent > 0:
+                max_price = int(round(base_max * multiplier))
+                min_price = int(round(base_min * multiplier))
+            else:
+                max_price = base_max
+                min_price = base_min
+
+            # Tính tiến độ chuẩn xác (không bị ảo > 100% khi có buff)
+            if base_max > 0 and market_price > 0:
+                ratio = (market_price / base_max * 100.0)
+            elif max_price > 0:
+                ratio = (price / max_price * 100.0)
+            else:
+                ratio = 0.0
+
+            if max_price > 0 and price >= max_price:
+                ratio = max(100.0, ratio)
 
             # Phân loại trạng thái
             if max_price > 0 and price >= max_price:
@@ -182,9 +211,12 @@ class MarketManager:
                 "itemName": it.get("itemName", ""),
                 "Label": it.get("Label", it.get("itemName", "Chưa rõ")),
                 "Price": price,
+                "MarketPrice": market_price,
                 "Min": min_price,
                 "BasePrice": base_price,
                 "Max": max_price,
+                "BaseMax": base_max,
+                "CategoryPercent": cat_percent,
                 "Ratio": ratio,
                 "Status": it.get("Status", "equal"),
                 "category": it.get("category", "other"),
@@ -216,7 +248,7 @@ class MarketManager:
 
             import websocket
             ws = websocket.WebSocket()
-            ws.connect(root_target["webSocketDebuggerUrl"], timeout=2.5)
+            ws.connect(root_target["webSocketDebuggerUrl"], suppress_origin=True, timeout=3.0)
 
             # Đọc trực tiếp từ React Fiber Store của queen_market trong RAM
             js_query = """(() => {
@@ -239,6 +271,10 @@ class MarketManager:
                     while (ms) {
                         let st = ms.memoizedState;
                         if (st && typeof st === 'object' && !Array.isArray(st)) {
+                            const keys = Object.keys(st);
+                            if (keys.length > 10 && st[keys[0]] && st[keys[0]].Price !== undefined) {
+                                return Object.values(st);
+                            }
                             if ((st.potato && st.potato.Price !== undefined) || (st.ls_gold_ingot && st.ls_gold_ingot.Price !== undefined)) {
                                 return Object.values(st);
                             }
@@ -265,16 +301,22 @@ class MarketManager:
                 raw_items = market_data if isinstance(market_data, list) else market_data.get("items", [])
                 if raw_items:
                     self.items = self._process_items(raw_items)
-                    # Lưu đè vào file local
-                    save_path = os.path.join(get_base_dir(), "market_prices.json")
-                    with open(save_path, "w", encoding="utf-8") as f:
-                        json.dump(raw_items, f, indent=2, ensure_ascii=False)
-                    # Đồng bộ sang codeminigame nếu có
-                    try:
-                        with open(r"E:\codeminigame\market_prices.json", "w", encoding="utf-8") as f:
-                            json.dump(raw_items, f, indent=2, ensure_ascii=False)
-                    except Exception:
-                        pass
+                    raw_str = json.dumps(raw_items)
+                    if self._last_raw_str != raw_str:
+                        self._last_raw_str = raw_str
+                        # Chỉ ghi file khi dữ liệu thực sự có biến động
+                        save_path = os.path.join(get_base_dir(), "market_prices.json")
+                        try:
+                            with open(save_path, "w", encoding="utf-8") as f:
+                                json.dump(raw_items, f, indent=2, ensure_ascii=False)
+                        except Exception:
+                            pass
+                        # Đồng bộ sang codeminigame nếu có
+                        try:
+                            with open(r"E:\codeminigame\market_prices.json", "w", encoding="utf-8") as f:
+                                json.dump(raw_items, f, indent=2, ensure_ascii=False)
+                        except Exception:
+                            pass
                     return True
         except Exception:
             pass
@@ -311,18 +353,30 @@ class MarketManager:
 
         return exact_matches if exact_matches else partial_matches
 
-    def get_near_max_items(self, threshold=None):
+    def get_near_max_items(self, threshold=None, filter_category=True):
         """Lấy danh sách các món đang sát max (>= threshold) hoặc chạm max"""
         self.update()
         thresh = threshold if threshold is not None else self.threshold
-        matched = [it for it in self.items if it["Ratio"] >= thresh]
+        enabled_cats = self.config.get("enabled_categories") if filter_category else None
+        matched = []
+        for it in self.items:
+            if enabled_cats and "all" not in enabled_cats and it.get("category") not in enabled_cats:
+                continue
+            if it["Ratio"] >= thresh:
+                matched.append(it)
         matched.sort(key=lambda x: x["Ratio"], reverse=True)
         return matched
 
-    def get_max_items(self):
+    def get_max_items(self, filter_category=True):
         """Lấy danh sách các món đạt 100% max giá"""
         self.update()
-        matched = [it for it in self.items if it["Max"] > 0 and it["Price"] >= it["Max"]]
+        enabled_cats = self.config.get("enabled_categories") if filter_category else None
+        matched = []
+        for it in self.items:
+            if enabled_cats and "all" not in enabled_cats and it.get("category") not in enabled_cats:
+                continue
+            if it["Max"] > 0 and it["Price"] >= it["Max"]:
+                matched.append(it)
         matched.sort(key=lambda x: x["Price"], reverse=True)
         return matched
 
@@ -332,43 +386,88 @@ class MarketManager:
 
     def check_for_alerts(self):
         """
-        Kiểm tra và thông báo khi vật phẩm đạt từ 80% đến 100% MAX.
-        Chống spam:
-        - Chỉ gửi khi mới chạm mốc >= 80% hoặc chạm đỉnh 100% MAX hoặc giá tăng cao hơn.
-        - Nhắc lại sau 2 tiếng nếu vẫn giữ giá cao.
+        Kiểm tra và thông báo biến động giá thị trường liên tục (mỗi 3 giây):
+        1. Giá đạt từ 80% đến 100% MAX (hoặc tiếp tục tăng cao hơn).
+        2. CẢNH BÁO TỤT GIÁ: Khi người chơi vừa bán làm giá giảm (price < prev_price).
+        3. CẢNH BÁO TỤT KHỎI 80%: Khi giá đang ngon mà tụt xuống dưới 80% để kịp ngừng xả hàng.
         """
         self.update()
         alerts = []
         now = time.time()
         thresh = float(self.config.get("alert_threshold_percent", 80))
+        enabled_cats = self.config.get("enabled_categories")
+
+        if not hasattr(self, "price_history"):
+            self.price_history = {}
 
         for it in self.items:
+            cat = it.get("category")
+            if enabled_cats and "all" not in enabled_cats and cat not in enabled_cats:
+                continue
+
             item_name = it["itemName"]
             price = it["Price"]
             max_price = it["Max"]
             ratio = it["Ratio"]
 
-            is_eligible = (max_price > 0 and ratio >= thresh)
+            prev = self.price_history.get(item_name)
 
+            if prev is None:
+                self.price_history[item_name] = {"price": price, "ratio": ratio, "time": now}
+                if max_price > 0 and ratio >= thresh:
+                    it_copy = dict(it)
+                    it_copy["alert_type"] = "MAX" if ratio >= 100 else "NEAR_MAX"
+                    alerts.append(it_copy)
+                    self.last_alert_states[item_name] = {"price": price, "ratio": ratio, "time": now}
+                continue
+
+            prev_price = prev["price"]
+            prev_ratio = prev["ratio"]
+
+            # TRƯỜNG HỢP 1: BỊ TỤT GIÁ (Ví dụ vừa bán xong bị tụt giá)
+            if price < prev_price:
+                diff = price - prev_price
+                # Chỉ cảnh báo nếu mức giảm đáng kể (>= 5$ hoặc >= 0.5% giá)
+                if abs(diff) >= 5 or (prev_price > 0 and abs(diff) / prev_price >= 0.005):
+                    if prev_ratio >= 75:
+                        it_copy = dict(it)
+                        it_copy["prev_price"] = prev_price
+                        it_copy["price_diff"] = diff
+                        if ratio < thresh and prev_ratio >= thresh:
+                            it_copy["alert_type"] = "DROP_BELOW_80"
+                        else:
+                            it_copy["alert_type"] = "PRICE_DROP"
+                        alerts.append(it_copy)
+
+                self.price_history[item_name] = {"price": price, "ratio": ratio, "time": now}
+                if ratio < thresh and item_name in self.last_alert_states:
+                    del self.last_alert_states[item_name]
+                continue
+
+            # TRƯỜNG HỢP 2: GIÁ TĂNG HOẶC GIỮ NGUYÊN
+            self.price_history[item_name] = {"price": price, "ratio": ratio, "time": now}
+
+            is_eligible = (max_price > 0 and ratio >= thresh)
             if not is_eligible:
                 if item_name in self.last_alert_states:
                     del self.last_alert_states[item_name]
                 continue
 
-            prev = self.last_alert_states.get(item_name)
+            last_alert = self.last_alert_states.get(item_name)
             should_alert = False
+            alert_type = "MAX" if ratio >= 100 else "NEAR_MAX"
 
-            if not prev:
+            if not last_alert:
                 should_alert = True
             else:
-                # Nếu từ sát max (<100%) nhảy lên chạm max (>=100%)
-                if prev.get("ratio", 0) < 100 and ratio >= 100:
+                if last_alert.get("ratio", 0) < 100 and ratio >= 100:
                     should_alert = True
-                # Hoặc giá tiếp tục tăng cao hơn đỉnh cũ
-                elif price > prev.get("price", 0):
-                    should_alert = True
-                # Hoặc giữ giá cao liên tục sau 2 tiếng thì nhắc lại
-                elif (now - prev.get("time", 0)) > 7200:
+                    alert_type = "MAX"
+                elif price > last_alert.get("price", 0):
+                    diff = price - last_alert.get("price", 0)
+                    if diff >= 5 or (last_alert.get("price", 0) > 0 and diff / last_alert.get("price", 0) >= 0.005):
+                        should_alert = True
+                elif (now - last_alert.get("time", 0)) > 7200:
                     should_alert = True
 
             if should_alert:
@@ -377,7 +476,9 @@ class MarketManager:
                     "ratio": ratio,
                     "time": now
                 }
-                alerts.append(it)
+                it_copy = dict(it)
+                it_copy["alert_type"] = alert_type
+                alerts.append(it_copy)
 
-        alerts.sort(key=lambda x: x["Ratio"], reverse=True)
+        alerts.sort(key=lambda x: (x.get("alert_type") == "MAX", x["Ratio"]), reverse=True)
         return alerts

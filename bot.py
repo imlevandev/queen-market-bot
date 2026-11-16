@@ -31,41 +31,172 @@ def make_progress_bar(ratio, length=10):
     bar = "█" * filled + "░" * (length - filled)
     return f"`[{bar}]` **{ratio:.1f}%**"
 
+def get_cat_tag_and_icon(cat):
+    if cat == "lumberjack":
+        return "🪓 [GỖ]", "🪓"
+    elif cat == "mining":
+        return "⛏️ [ĐÁ/QUẶNG]", "⛏️"
+    elif cat == "fishing":
+        return "🎣 [CÁ]", "🎣"
+    elif cat == "farming":
+        return "🌾 [NÔNG SẢN]", "🌾"
+    elif cat in ("mushroom", "mushrooms"):
+        return "🍄 [NẤM]", "🍄"
+    elif cat == "materials":
+        return "🧱 [VẬT LIỆU]", "🧱"
+    return f"📦 [{str(cat).upper()}]", "📦"
+
 def format_item_card(item):
-    """Định dạng cực kỳ gọn gàng, rõ ràng, không màu mè"""
+    """Định dạng cực kỳ gọn gàng, rõ ràng, có phân biệt từng nghề, buff và cảnh báo tụt giá"""
+    alert_type = item.get("alert_type", "")
     ratio = item["Ratio"]
     p = item["Price"]
     m = item["Max"]
     lbl = item["Label"]
+    cat = item.get("category", "")
+    cat_pct = item.get("CategoryPercent", 0)
+    cat_tag, _ = get_cat_tag_and_icon(cat)
+    buff_str = f" *(Buff +{int(cat_pct)}%)*" if cat_pct > 0 else ""
 
-    if ratio >= 100:
-        header = f"🚨 **[CHẠM MAX 100%] {lbl}**"
+    if alert_type == "PRICE_DROP":
+        diff = item.get("price_diff", 0)
+        prev_p = item.get("prev_price", p)
+        return (
+            f"📉 **[CẢNH BÁO TỤT GIÁ] {cat_tag} {lbl}**\n"
+            f"• Vừa giảm: **{prev_p:,}$** ➔ **{p:,}$** (`{diff:+,}$`)\n"
+            f"• Giá MAX: **{m:,}$**{buff_str}\n"
+            f"• Tiến độ MAX: {make_progress_bar(ratio)}\n"
+            f"*(Chú ý: Giá đang hạ nhiệt sau khi bán, cân nhắc dừng xả nếu giá xuống thấp)*"
+        )
+    elif alert_type == "DROP_BELOW_80":
+        diff = item.get("price_diff", 0)
+        prev_p = item.get("prev_price", p)
+        return (
+            f"⚠️ **[NGỪNG XẢ HÀNG - TỤT DƯỚI 80%] {cat_tag} {lbl}**\n"
+            f"• Vừa tụt khỏi mốc ngon: **{prev_p:,}$** ➔ **{p:,}$** (`{diff:+,}$`)\n"
+            f"• Tiến độ hiện tại: {make_progress_bar(ratio)} *(< 80%)*\n"
+            f"*(Khuyên: Ngừng bán để chờ giá tích lũy hồi phục lại)*"
+        )
+    elif ratio >= 100:
+        header = f"🚨 **[CHẠM MAX 100%] {cat_tag} {lbl}**"
     elif ratio >= 80:
-        header = f"🔥 **[SÁT MAX - {ratio:.1f}%] {lbl}**"
+        header = f"🔥 **[SÁT MAX - {ratio:.1f}%] {cat_tag} {lbl}**"
     else:
-        header = f"🏷️ **{lbl}**"
+        header = f"🏷️ **{cat_tag} {lbl}**"
 
     return (
         f"{header}\n"
-        f"• Giá hiện tại: **{p:,}$**\n"
+        f"• Giá bán hiện tại: **{p:,}$**{buff_str}\n"
         f"• Giá MAX: **{m:,}$**\n"
         f"• Tiến độ MAX: {make_progress_bar(ratio)}"
     )
 
-def format_max_list(items):
+def format_category_table(category_key, title, icon, items):
+    cat_items = [it for it in items if it.get("category") == category_key or (category_key == "mushrooms" and it.get("category") == "mushroom")]
+    cat_items.sort(key=lambda x: x["Ratio"], reverse=True)
+    if not cat_items:
+        return [f"⚠️ Không có vật phẩm nào thuộc danh mục **{title}**."]
+
+    header = f"{icon} **BẢNG GIÁ THỊ TRƯỜNG {title.upper()} ({len(cat_items)} VẬT PHẨM BÁN ĐƯỢC):**"
+    chunks = []
+    current_lines = [header]
+    current_len = len(header)
+
+    for it in cat_items:
+        r = it["Ratio"]
+        badge = "🚨" if r >= 100 else ("⚡" if r >= 80 else "🔹")
+        cat_pct = it.get("CategoryPercent", 0)
+        buff_str = f" *(+{int(cat_pct)}% Buff)*" if cat_pct > 0 else ""
+        trend = "📈" if it.get("Status") == "up" else ("📉" if it.get("Status") == "down" else "➖")
+        line = f"{badge} **{it['Label']}**: **{it['Price']:,}$** / Max {it['Max']:,}${buff_str} | {trend} — {make_progress_bar(r, 6)}"
+
+        if current_len + len(line) + 2 > 1900:
+            chunks.append("\n".join(current_lines))
+            current_lines = [line]
+            current_len = len(line)
+        else:
+            current_lines.append(line)
+            current_len += len(line) + 1
+
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+    return chunks
+
+def format_all_categories_table(items):
+    cat_order = [
+        ("lumberjack", "Nghề Gỗ (Lumberjack)", "🪓"),
+        ("mining", "Nghề Đá & Khoáng Sản (Mining)", "⛏️"),
+        ("fishing", "Nghề Đánh Bắt Cá & Hải Sản (Fishing)", "🎣"),
+        ("farming", "Nghề Nông Sản & Trồng Trọt (Farming)", "🌾"),
+        ("mushrooms", "Nghề Hái Nấm (Mushrooms)", "🍄"),
+        ("materials", "Vật Liệu & Chế Tạo (Materials)", "🧱"),
+    ]
+    all_chunks = []
+    total_count = len(items)
+    header = f"📊 **BẢNG GIÁ TOÀN BỘ THỊ TRƯỜNG QUEEN MARKET ({total_count} MẶT HÀNG):**"
+    current_lines = [header]
+    current_len = len(header)
+
+    for cat_key, title, icon in cat_order:
+        cat_items = [it for it in items if it.get("category") == cat_key or (cat_key == "mushrooms" and it.get("category") == "mushroom")]
+        if not cat_items:
+            continue
+        cat_items.sort(key=lambda x: x["Ratio"], reverse=True)
+        cat_header = f"\n{icon} **{title.upper()} ({len(cat_items)} MÓN):**"
+        
+        if current_len + len(cat_header) > 1850:
+            all_chunks.append("\n".join(current_lines))
+            current_lines = [cat_header]
+            current_len = len(cat_header)
+        else:
+            current_lines.append(cat_header)
+            current_len += len(cat_header) + 1
+
+        for it in cat_items:
+            r = it["Ratio"]
+            badge = "🚨" if r >= 100 else ("⚡" if r >= 80 else "🔹")
+            cat_pct = it.get("CategoryPercent", 0)
+            buff_str = f" *(+{int(cat_pct)}% Buff)*" if cat_pct > 0 else ""
+            trend = "📈" if it.get("Status") == "up" else ("📉" if it.get("Status") == "down" else "➖")
+            line = f"{badge} **{it['Label']}**: **{it['Price']:,}$** / Max {it['Max']:,}${buff_str} | {trend} — {make_progress_bar(r, 6)}"
+
+            if current_len + len(line) + 2 > 1850:
+                all_chunks.append("\n".join(current_lines))
+                current_lines = [line]
+                current_len = len(line)
+            else:
+                current_lines.append(line)
+                current_len += len(line) + 1
+
+    if current_lines:
+        all_chunks.append("\n".join(current_lines))
+    return all_chunks
+
+def format_max_list(items, enabled_cats=None):
+    if enabled_cats and "all" not in enabled_cats:
+        items = [it for it in items if it.get("category") in enabled_cats]
+
     matched = [it for it in items if it.get("Ratio", 0) >= 80]
     matched.sort(key=lambda x: x["Ratio"], reverse=True)
     if matched:
-        lines = ["🔥 **DANH SÁCH MÓN TỪ 80% ĐẾN 100% MAX:**"]
+        lines = [f"🔥 **DANH SÁCH MẶT HÀNG TỪ 80% ĐẾN 100% MAX ({len(matched)} MÓN):**"]
         for it in matched:
             icon = "🚨" if it["Ratio"] >= 100 else "⚡"
-            lines.append(f"{icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 8)}")
+            cat = it.get("category")
+            _, cat_icon = get_cat_tag_and_icon(cat)
+            cat_pct = it.get("CategoryPercent", 0)
+            buff_str = f" *(+{int(cat_pct)}% Buff)*" if cat_pct > 0 else ""
+            lines.append(f"{icon} {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}${buff_str} — {make_progress_bar(it['Ratio'], 8)}")
         return "\n".join(lines)
     else:
-        top_items = sorted(items, key=lambda x: x.get("Ratio", 0), reverse=True)[:5]
-        lines = ["⚠️ **Chưa có món nào đạt mốc 80% MAX.**\n📊 **Top các món gần MAX nhất hiện tại:**"]
+        top_items = sorted(items, key=lambda x: x.get("Ratio", 0), reverse=True)[:8]
+        lines = ["⚠️ **Chưa có mặt hàng nào đạt mốc 80% MAX.**\n📊 **Top các món gần MAX nhất thị trường hiện tại:**"]
         for it in top_items:
-            lines.append(f"• **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 8)}")
+            cat = it.get("category")
+            _, cat_icon = get_cat_tag_and_icon(cat)
+            cat_pct = it.get("CategoryPercent", 0)
+            buff_str = f" *(+{int(cat_pct)}% Buff)*" if cat_pct > 0 else ""
+            lines.append(f"• {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}${buff_str} — {make_progress_bar(it['Ratio'], 8)}")
         return "\n".join(lines)
 
 async def send_webhook_alert(webhook_url, content):
@@ -86,8 +217,10 @@ async def on_ready():
     print(f"[+] Bot đã kết nối thành công: {bot.user} (ID: {bot.user.id})")
     print(f"[+] Phiên bản: v{VERSION}")
     print(f"[+] Số máy chủ đang tham gia: {len(bot.guilds)}")
-    print(f"[+] Chế độ: THÔNG BÁO TỪ 80% ĐẾN 100% MAX")
-    print(f"[+] Chu kỳ quét thị trường: {market.config.get('check_interval_seconds', 30)}s")
+    cats = market.config.get('enabled_categories', ['all'])
+    print(f"[+] Chế độ: THEO DÕI TOÀN BỘ GIÁ THỊ TRƯỜNG (Tất cả mặt hàng từ 80% đến 100% MAX)")
+    print(f"[+] Danh mục theo dõi: {cats}")
+    print(f"[+] Chu kỳ quét thị trường: {market.config.get('check_interval_seconds', 3)}s (quét liên tục realtime)")
     print("=" * 60, flush=True)
 
     try:
@@ -109,13 +242,13 @@ async def on_ready():
             if not ch:
                 ch = await bot.fetch_channel(ch_int)
             if ch:
-                await ch.send("🟢 **Bot báo giá đã hoạt động!** (Tự động thông báo khi giá đạt từ **80% đến 100% MAX**)")
+                await ch.send("🟢 **Bot báo giá đã hoạt động!** (Chế độ: **Toàn bộ mặt hàng thị trường** - Gỗ, Đá, Cá, Nông sản, Nấm, Vật liệu...)")
                 print(f"[+] Đã thông báo bot hoạt động tới kênh: #{getattr(ch, 'name', ch_id)}", flush=True)
         except Exception as e:
             print(f"[!] Không thể gửi vào channel: {e}", flush=True)
 
-# Tác vụ chạy ngầm kiểm tra giá định kỳ (THÔNG BÁO TỪ 80% - 100% MAX)
-@tasks.loop(seconds=market.config.get("check_interval_seconds", 30))
+# Tác vụ chạy ngầm kiểm tra giá định kỳ (Quét liên tục realtime mỗi 3 giây)
+@tasks.loop(seconds=market.config.get("check_interval_seconds", 3))
 async def auto_price_monitor():
     try:
         alerts = market.check_for_alerts()
@@ -126,14 +259,24 @@ async def auto_price_monitor():
         webhook_url = market.config.get("webhook_url")
         role_id = market.config.get("ping_role_id")
 
-        print(f"[*] [{datetime.now().strftime('%H:%M:%S')}] Phát hiện {len(alerts)} món từ 80% - 100% MAX!", flush=True)
+        print(f"[*] [{datetime.now().strftime('%H:%M:%S')}] Phát hiện {len(alerts)} biến động thị trường (Toàn bộ mặt hàng)!", flush=True)
 
         if len(alerts) > 3:
             # Gộp thành 1 danh sách gọn gàng nếu nhiều món cùng lúc
-            lines = [f"🔥 **THÔNG BÁO THỊ TRƯỜNG ({len(alerts)} món đạt 80% - 100% MAX):**"]
+            lines = [f"⚡ **BIẾN ĐỘNG THỊ TRƯỜNG TOÀN BỘ ({len(alerts)} thông báo mới):**"]
             for it in alerts:
-                icon = "🚨" if it["Ratio"] >= 100 else "⚡"
-                lines.append(f"{icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 8)}")
+                at = it.get("alert_type")
+                cat = it.get("category")
+                _, cat_icon = get_cat_tag_and_icon(cat)
+                diff = it.get("price_diff", 0)
+                if at == "PRICE_DROP":
+                    lines.append(f"📉 {cat_icon} **{it['Label']}**: Vừa tụt {it.get('prev_price'):,}$ ➔ {it['Price']:,}$ (`{diff:+,}$`) — {make_progress_bar(it['Ratio'], 6)}")
+                elif at == "DROP_BELOW_80":
+                    lines.append(f"⚠️ {cat_icon} **{it['Label']}**: Tụt dưới 80% (còn {it['Price']:,}$) — {make_progress_bar(it['Ratio'], 6)}")
+                elif it["Ratio"] >= 100:
+                    lines.append(f"🚨 {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 6)}")
+                else:
+                    lines.append(f"🔥 {cat_icon} **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 6)}")
             summary_msg = "\n".join(lines)
 
             if channel_id:
@@ -151,7 +294,9 @@ async def auto_price_monitor():
             # Gửi từng thẻ gọn gàng nếu chỉ có 1-3 món
             for it in alerts:
                 msg = format_item_card(it)
-                if role_id and it["Ratio"] >= 100:
+                at = it.get("alert_type")
+                # Chỉ tag role khi chạm MAX 100% (không tag khi tụt giá)
+                if role_id and it["Ratio"] >= 100 and at == "MAX":
                     msg = f"<@&{role_id}>\n" + msg
 
                 if channel_id:
@@ -177,7 +322,7 @@ async def auto_price_monitor():
 async def cmd_gia(ctx, *, item_name: str = None):
     """Tra cứu giá của một vật phẩm (VD: !gia sắt, !gia nấm)"""
     if not item_name:
-        await ctx.send("⚠️ **Cú pháp:** `!gia <tên vật phẩm>`\n*Ví dụ:* `!gia sắt`, `!gia nấm`, `!gia bột mì`, `!gia vàng`")
+        await ctx.send("⚠️ **Cú pháp:** `!gia <tên vật phẩm>`\n*Ví dụ:* `!gia sắt`, `!gia nấm`, `!gia bột mì`, `!gia cá hồi`, `!gia lúa mì`")
         return
 
     matches = market.search_items(item_name)
@@ -197,16 +342,18 @@ async def cmd_gia(ctx, *, item_name: str = None):
 
 @bot.command(name="max", aliases=["satmax", "dinh"])
 async def cmd_max(ctx):
-    """Xem danh sách các mặt hàng đã chạm max"""
+    """Xem danh sách các mặt hàng đã chạm max hoặc gần max (toàn bộ thị trường)"""
     items = market.get_all_items()
-    await ctx.send(format_max_list(items))
+    cats = market.config.get("enabled_categories")
+    await ctx.send(format_max_list(items, enabled_cats=cats))
 
 @bot.command(name="check", aliases=["kiemtra", "scan"])
 async def cmd_check(ctx):
-    """Quét dữ liệu mới nhất từ FiveM hoặc file"""
+    """Quét dữ liệu mới nhất từ FiveM hoặc file và báo các món gần max"""
     market.update()
     items = market.get_all_items()
-    await ctx.send("🔄 **Đã cập nhật thị trường!**\n" + format_max_list(items))
+    cats = market.config.get("enabled_categories")
+    await ctx.send("🔄 **Đã cập nhật thị trường!**\n" + format_max_list(items, enabled_cats=cats))
 
 @bot.command(name="kenh", aliases=["setchannel"])
 @commands.has_permissions(administrator=True)
@@ -215,17 +362,187 @@ async def cmd_setchannel(ctx):
     ch_id = str(ctx.channel.id)
     market.config["channel_id"] = ch_id
     market.save_config()
-    await ctx.send(f"✅ Đã đặt kênh <#{ch_id}> làm kênh nhận **Thông Báo Khi Chạm Max**!")
+    await ctx.send(f"✅ Đã đặt kênh <#{ch_id}> làm kênh nhận **Thông Báo Giá Tự Động**!")
+
+# --- LỆNH XEM BẢNG GIÁ TOÀN BỘ CÁC MẶT HÀNG ---
+@bot.command(name="banggia", aliases=["bangia", "all", "toanbo", "market"])
+async def cmd_banggia(ctx):
+    """Xem toàn bộ giá tất cả các mặt hàng trên thị trường"""
+    market.update()
+    items = market.get_all_items()
+    chunks = format_all_categories_table(items)
+    for c in chunks:
+        await ctx.send(c)
+
+@bot.tree.command(name="banggia", description="Xem toàn bộ giá tất cả các mặt hàng trên thị trường")
+async def slash_banggia(interaction: discord.Interaction):
+    market.update()
+    items = market.get_all_items()
+    chunks = format_all_categories_table(items)
+    await interaction.response.send_message(chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
+
+# --- LỆNH TỪNG NGHỀ CỤ THỂ ---
+@bot.command(name="go", aliases=["wood", "lumberjack"])
+async def cmd_go(ctx):
+    """Xem toàn bộ giá tất cả các loại Gỗ bán được"""
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("lumberjack", "Nghề Gỗ (Lumberjack)", "🪓", items)
+    for c in chunks:
+        await ctx.send(c)
+
+@bot.command(name="da", aliases=["quang", "khoangsan", "mining", "stone"])
+async def cmd_da(ctx):
+    """Xem toàn bộ giá tất cả các loại Đá & Quặng bán được"""
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("mining", "Nghề Đá & Khoáng Sản (Mining)", "⛏️", items)
+    for c in chunks:
+        await ctx.send(c)
+
+@bot.command(name="ca", aliases=["fish", "fishing", "cauca", "haisan"])
+async def cmd_ca(ctx):
+    """Xem toàn bộ giá tất cả các loại Cá & Thủy hải sản bán được"""
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("fishing", "Nghề Đánh Bắt Cá & Hải Sản (Fishing)", "🎣", items)
+    for c in chunks:
+        await ctx.send(c)
+
+@bot.command(name="nongsan", aliases=["farm", "farming", "lua", "rau"])
+async def cmd_nongsan(ctx):
+    """Xem toàn bộ giá tất cả các loại Nông Sản bán được"""
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("farming", "Nghề Nông Sản & Trồng Trọt (Farming)", "🌾", items)
+    for c in chunks:
+        await ctx.send(c)
+
+@bot.command(name="nam", aliases=["mushroom", "mushrooms", "hainam"])
+async def cmd_nam(ctx):
+    """Xem toàn bộ giá tất cả các loại Nấm bán được"""
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("mushrooms", "Nghề Hái Nấm (Mushrooms)", "🍄", items)
+    for c in chunks:
+        await ctx.send(c)
+
+@bot.command(name="vatlieu", aliases=["materials", "craft", "chetao", "phelieu"])
+async def cmd_vatlieu(ctx):
+    """Xem toàn bộ giá tất cả các loại Vật Liệu & Chế Tạo"""
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("materials", "Vật Liệu & Chế Tạo (Materials)", "🧱", items)
+    for c in chunks:
+        await ctx.send(c)
+
+# --- SLASH COMMANDS TỪNG NGHỀ ---
+@bot.tree.command(name="go", description="Xem toàn bộ giá tất cả các loại Gỗ bán được")
+async def slash_go(interaction: discord.Interaction):
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("lumberjack", "Nghề Gỗ (Lumberjack)", "🪓", items)
+    await interaction.response.send_message(chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
+
+@bot.tree.command(name="da", description="Xem toàn bộ giá tất cả các loại Đá & Quặng bán được")
+async def slash_da(interaction: discord.Interaction):
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("mining", "Nghề Đá & Khoáng Sản (Mining)", "⛏️", items)
+    await interaction.response.send_message(chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
+
+@bot.tree.command(name="ca", description="Xem toàn bộ giá tất cả các loại Cá & Thủy hải sản bán được")
+async def slash_ca(interaction: discord.Interaction):
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("fishing", "Nghề Đánh Bắt Cá & Hải Sản (Fishing)", "🎣", items)
+    await interaction.response.send_message(chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
+
+@bot.tree.command(name="nongsan", description="Xem toàn bộ giá tất cả các loại Nông Sản bán được")
+async def slash_nongsan(interaction: discord.Interaction):
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("farming", "Nghề Nông Sản & Trồng Trọt (Farming)", "🌾", items)
+    await interaction.response.send_message(chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
+
+@bot.tree.command(name="nam", description="Xem toàn bộ giá tất cả các loại Nấm bán được")
+async def slash_nam(interaction: discord.Interaction):
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("mushrooms", "Nghề Hái Nấm (Mushrooms)", "🍄", items)
+    await interaction.response.send_message(chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
+
+@bot.tree.command(name="vatlieu", description="Xem toàn bộ giá tất cả các loại Vật Liệu & Chế Tạo")
+async def slash_vatlieu(interaction: discord.Interaction):
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("materials", "Vật Liệu & Chế Tạo (Materials)", "🧱", items)
+    await interaction.response.send_message(chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
+
+@bot.command(name="nghe", aliases=["jobs", "chedo", "mode"])
+async def cmd_nghe(ctx):
+    """Xem trạng thái theo dõi các danh mục mặt hàng"""
+    cats = market.config.get("enabled_categories")
+    is_all = not cats or "all" in cats
+    msg = (
+        "📋 **CHẾ ĐỘ THEO DÕI NGHỀ CỦA BOT:**\n"
+        f"• 🪓 **Nghề Gỗ (Lumberjack):** {'🟢 ĐANG BẬT' if is_all or 'lumberjack' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• ⛏️ **Nghề Đá & Quặng (Mining):** {'🟢 ĐANG BẬT' if is_all or 'mining' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🎣 **Nghề Câu Cá (Fishing):** {'🟢 ĐANG BẬT' if is_all or 'fishing' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🌾 **Nghề Nông Sản (Farming):** {'🟢 ĐANG BẬT' if is_all or 'farming' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🍄 **Nghề Hái Nấm (Mushrooms):** {'🟢 ĐANG BẬT' if is_all or 'mushrooms' in cats or 'mushroom' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🧱 **Vật Liệu & Chế Tạo (Materials):** {'🟢 ĐANG BẬT' if is_all or 'materials' in cats else '🔴 ĐANG TẮT'}\n\n"
+        "✨ *Bot đang ở chế độ **THEO DÕI TOÀN BỘ GIÁ THỊ TRƯỜNG** không giới hạn danh mục!*"
+    )
+    await ctx.send(msg)
+
+@bot.tree.command(name="nghe", description="Xem các danh mục nghề đang được theo dõi giá")
+async def slash_nghe(interaction: discord.Interaction):
+    cats = market.config.get("enabled_categories")
+    is_all = not cats or "all" in cats
+    msg = (
+        "📋 **CHẾ ĐỘ THEO DÕI NGHỀ CỦA BOT:**\n"
+        f"• 🪓 **Nghề Gỗ (Lumberjack):** {'🟢 ĐANG BẬT' if is_all or 'lumberjack' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• ⛏️ **Nghề Đá & Quặng (Mining):** {'🟢 ĐANG BẬT' if is_all or 'mining' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🎣 **Nghề Câu Cá (Fishing):** {'🟢 ĐANG BẬT' if is_all or 'fishing' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🌾 **Nghề Nông Sản (Farming):** {'🟢 ĐANG BẬT' if is_all or 'farming' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🍄 **Nghề Hái Nấm (Mushrooms):** {'🟢 ĐANG BẬT' if is_all or 'mushrooms' in cats or 'mushroom' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🧱 **Vật Liệu & Chế Tạo (Materials):** {'🟢 ĐANG BẬT' if is_all or 'materials' in cats else '🔴 ĐANG TẮT'}\n\n"
+        "✨ *Bot đang ở chế độ **THEO DÕI TOÀN BỘ GIÁ THỊ TRƯỜNG** không giới hạn danh mục!*"
+    )
+    await interaction.response.send_message(msg)
 
 @bot.command(name="help", aliases=["trogiup", "lenh"])
 async def cmd_help(ctx):
     """Xem danh sách hướng dẫn lệnh"""
     help_text = (
-        "🤖 **LỆNH BOT BÁO GIÁ:**\n"
-        "• `!gia <tên>` (hoặc `/gia`): Tra giá 1 món (VD: `!gia sắt`, `!gia nấm`)\n"
-        "• `!max` (hoặc `/max`): Xem các món đã chạm MAX hoặc gần MAX nhất\n"
-        "• `!check` (hoặc `/kiemtra`): Quét và cập nhật giá mới nhất ngay lập tức\n"
-        "• `!kenh`: *(Admin)* Đặt kênh nhận thông báo tự động"
+        "🤖 **DANH SÁCH LỆNH BOT BÁO GIÁ QUEEN MARKET:**\n"
+        "• `!banggia` (hoặc `/banggia`, `!all`): Xem bảng giá **toàn bộ tất cả mặt hàng** trên thị trường\n"
+        "• `!go` (hoặc `/go`): Xem bảng giá toàn bộ mặt hàng Gỗ\n"
+        "• `!da` (hoặc `/da`): Xem bảng giá toàn bộ mặt hàng Đá/Quặng/Thỏi kim loại\n"
+        "• `!ca` (hoặc `/ca`): Xem bảng giá toàn bộ mặt hàng Cá/Thủy hải sản\n"
+        "• `!nongsan` (hoặc `/nongsan`): Xem bảng giá toàn bộ mặt hàng Nông sản\n"
+        "• `!nam` (hoặc `/nam`): Xem bảng giá toàn bộ mặt hàng Nấm\n"
+        "• `!vatlieu` (hoặc `/vatlieu`): Xem bảng giá toàn bộ mặt hàng Vật liệu/Chế tạo\n"
+        "• `!gia <tên>` (hoặc `/gia`): Tra giá 1 món cụ thể (VD: `!gia sắt`, `!gia cá hồi`, `!gia nấm`)\n"
+        "• `!max` (hoặc `/max`): Xem tất cả các món đang chạm MAX hoặc từ 80% MAX\n"
+        "• `!nghe` (hoặc `/nghe`): Xem trạng thái theo dõi các danh mục\n"
+        "• `!check` (hoặc `/kiemtra`): Quét và đồng bộ giá mới nhất ngay lập tức\n"
+        "• `!kenh`: *(Admin)* Đặt kênh nhận thông báo giá tự động"
     )
     await ctx.send(help_text)
 
@@ -249,16 +566,18 @@ async def slash_gia(interaction: discord.Interaction, ten_vat_pham: str):
             lines.append(f"• **{it['Label']}**: {it['Price']:,}$ / {it['Max']:,}$ — {make_progress_bar(it['Ratio'], 6)}")
         await interaction.response.send_message("\n".join(lines))
 
-@bot.tree.command(name="max", description="Xem các mặt hàng đã chạm max")
+@bot.tree.command(name="max", description="Xem các mặt hàng đã chạm max hoặc gần max (toàn thị trường)")
 async def slash_max(interaction: discord.Interaction):
     items = market.get_all_items()
-    await interaction.response.send_message(format_max_list(items))
+    cats = market.config.get("enabled_categories")
+    await interaction.response.send_message(format_max_list(items, enabled_cats=cats))
 
-@bot.tree.command(name="kiemtra", description="Kiểm tra thị trường ngay lập tức")
+@bot.tree.command(name="kiemtra", description="Kiểm tra và đồng bộ thị trường ngay lập tức")
 async def slash_check(interaction: discord.Interaction):
     market.update()
     items = market.get_all_items()
-    await interaction.response.send_message("🔄 **Đã cập nhật thị trường!**\n" + format_max_list(items))
+    cats = market.config.get("enabled_categories")
+    await interaction.response.send_message("🔄 **Đã cập nhật thị trường!**\n" + format_max_list(items, enabled_cats=cats))
 
 def main():
     # 1. Kiểm tra và tự động cập nhật nếu có bản mới trên GitHub
