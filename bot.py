@@ -297,19 +297,25 @@ async def send_webhook_alert(webhook_url, content):
         print(f"[!] Lỗi gửi Webhook: {e}")
 
 # ==================== DISCORD BOT CLIENT ====================
+DEFAULT_CHANNELS = [1566693963522642050, 1574422833063268403]
+
 def get_alert_channel_ids():
     """Lấy danh sách các channel ID nhận thông báo tự động (hỗ trợ cả list hoặc chuỗi đơn / phân tách phẩy)"""
+    ch_list = []
     raw = market.config.get("channel_ids") or market.config.get("channel_id")
-    if not raw:
-        return []
     if isinstance(raw, list):
-        return [int(x) for x in raw if str(x).strip().isdigit()]
-    if isinstance(raw, str):
+        ch_list = [int(x) for x in raw if str(x).strip().isdigit()]
+    elif isinstance(raw, str):
         parts = [p.strip() for p in raw.split(",") if p.strip()]
-        return [int(p) for p in parts if p.isdigit()]
-    if isinstance(raw, int):
-        return [raw]
-    return []
+        ch_list = [int(p) for p in parts if p.isdigit()]
+    elif isinstance(raw, int):
+        ch_list = [raw]
+
+    # Đảm bảo cả 2 kênh mặc định của 2 server luôn luôn có mặt
+    for def_ch in DEFAULT_CHANNELS:
+        if def_ch not in ch_list:
+            ch_list.append(def_ch)
+    return ch_list
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix=commands.when_mentioned_or("!"), intents=intents, help_command=None)

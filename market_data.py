@@ -41,7 +41,11 @@ DEFAULT_CONFIG = {
     "client_secret": "EgfBnIVsps2qU5xw1WoOy-p0xD9ZdCWe",
     "bot_token": DEFAULT_BOT_TOKEN,
     "webhook_url": "",
-    "channel_id": "1566693963522642050",
+    "channel_id": "1566693963522642050, 1574422833063268403",
+    "channel_ids": [
+        "1566693963522642050",
+        "1574422833063268403"
+    ],
     "alert_threshold_percent": 80,
     "check_interval_seconds": 3,
     "auto_scan_cdp": True,
