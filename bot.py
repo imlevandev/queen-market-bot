@@ -297,8 +297,22 @@ async def send_webhook_alert(webhook_url, content):
         print(f"[!] Lỗi gửi Webhook: {e}")
 
 # ==================== DISCORD BOT CLIENT ====================
+def get_alert_channel_ids():
+    """Lấy danh sách các channel ID nhận thông báo tự động (hỗ trợ cả list hoặc chuỗi đơn / phân tách phẩy)"""
+    raw = market.config.get("channel_ids") or market.config.get("channel_id")
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [int(x) for x in raw if str(x).strip().isdigit()]
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        return [int(p) for p in parts if p.isdigit()]
+    if isinstance(raw, int):
+        return [raw]
+    return []
+
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix=commands.when_mentioned_or("!"), intents=intents, help_command=None)
 
 _last_dashboard_edit = 0
 _last_dashboard_content = ""
@@ -321,8 +335,15 @@ async def on_ready():
     print("=" * 60, flush=True)
 
     try:
+        for g in bot.guilds:
+            try:
+                bot.tree.copy_global_to(guild=g)
+                await bot.tree.sync(guild=g)
+                print(f"[+] Đã đồng bộ tức thì Slash Command cho server: {g.name}", flush=True)
+            except Exception as e:
+                print(f"[!] Lỗi đồng bộ Slash Command cho server {g.name}: {e}", flush=True)
         synced = await bot.tree.sync()
-        print(f"[+] Đã đồng bộ {len(synced)} lệnh Slash (/) thành công.", flush=True)
+        print(f"[+] Đã đồng bộ toàn cầu {len(synced)} lệnh Slash (/) thành công.", flush=True)
     except Exception as e:
         print(f"[!] Lỗi đồng bộ Slash Command: {e}", flush=True)
 
@@ -330,19 +351,16 @@ async def on_ready():
     if not auto_price_monitor.is_running():
         auto_price_monitor.start()
 
-    # Gửi thông báo chào mừng vào kênh chỉ định nếu có
-    ch_id = market.config.get("channel_id")
-    if ch_id:
+    # Gửi thông báo chào mừng vào tất cả các kênh chỉ định
+    ch_ids = get_alert_channel_ids()
+    for ch_id in ch_ids:
         try:
-            ch_int = int(ch_id)
-            ch = bot.get_channel(ch_int)
-            if not ch:
-                ch = await bot.fetch_channel(ch_int)
+            ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
             if ch:
                 await ch.send("🟢 **Bot báo giá đã hoạt động!** (Chế độ: **Toàn bộ mặt hàng thị trường** - Gỗ, Đá, Cá, Nông sản, Nấm, Vật liệu...)")
-                print(f"[+] Đã thông báo bot hoạt động tới kênh: #{getattr(ch, 'name', ch_id)}", flush=True)
+                print(f"[+] Đã thông báo bot hoạt động tới kênh: #{getattr(ch, 'name', ch_id)} (Server: {getattr(ch, 'guild', 'N/A')})", flush=True)
         except Exception as e:
-            print(f"[!] Không thể gửi vào channel: {e}", flush=True)
+            print(f"[!] Không thể gửi vào channel {ch_id}: {e}", flush=True)
 
 # Tác vụ chạy ngầm kiểm tra giá định kỳ (Quét liên tục realtime mỗi 3 giây)
 @tasks.loop(seconds=market.config.get("check_interval_seconds", 3))
@@ -427,16 +445,16 @@ async def auto_price_monitor():
             if current_lines:
                 chunks.append("\n".join(current_lines))
 
-            if channel_id:
+            ch_ids = get_alert_channel_ids()
+            for ch_id in ch_ids:
                 try:
-                    ch_int = int(channel_id)
-                    target_ch = bot.get_channel(ch_int) or await bot.fetch_channel(ch_int)
+                    target_ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
                     if target_ch:
                         for chunk in chunks:
                             await target_ch.send(chunk)
                             await asyncio.sleep(0.5)
                 except Exception as e:
-                    print(f"[!] Lỗi gửi vào channel {channel_id}: {e}", flush=True)
+                    print(f"[!] Lỗi gửi vào channel {ch_id}: {e}", flush=True)
 
             if webhook_url:
                 for chunk in chunks:
@@ -451,14 +469,14 @@ async def auto_price_monitor():
                 if role_id and it["Ratio"] >= 100 and at == "MAX":
                     msg = f"<@&{role_id}>\n" + msg
 
-                if channel_id:
+                ch_ids = get_alert_channel_ids()
+                for ch_id in ch_ids:
                     try:
-                        ch_int = int(channel_id)
-                        target_ch = bot.get_channel(ch_int) or await bot.fetch_channel(ch_int)
+                        target_ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
                         if target_ch:
                             await target_ch.send(msg)
                     except Exception as e:
-                        print(f"[!] Lỗi gửi vào channel {channel_id}: {e}", flush=True)
+                        print(f"[!] Lỗi gửi vào channel {ch_id}: {e}", flush=True)
 
                 if webhook_url:
                     await send_webhook_alert(webhook_url, content=msg)
@@ -512,14 +530,42 @@ async def cmd_check(ctx):
     for c in chunks:
         await ctx.send(c)
 
-@bot.command(name="kenh", aliases=["setchannel"])
+@bot.command(name="kenh", aliases=["setchannel", "themkenh"])
 @commands.has_permissions(administrator=True)
 async def cmd_setchannel(ctx):
-    """Đặt kênh hiện tại làm nơi nhận thông báo giá tự động"""
+    """Thêm hoặc đặt kênh hiện tại làm nơi nhận thông báo giá tự động"""
     ch_id = str(ctx.channel.id)
-    market.config["channel_id"] = ch_id
+    ch_ids = [str(x) for x in get_alert_channel_ids()]
+    if ch_id not in ch_ids:
+        ch_ids.append(ch_id)
+    market.config["channel_id"] = ", ".join(ch_ids)
+    market.config["channel_ids"] = ch_ids
     market.save_config()
-    await ctx.send(f"✅ Đã đặt kênh <#{ch_id}> làm kênh nhận **Thông Báo Giá Tự Động**!")
+    await ctx.send(f"✅ Đã thêm kênh <#{ch_id}> vào danh sách nhận **Thông Báo Giá Tự Động**!\n📋 Các kênh hiện tại: " + ", ".join([f"<#{x}>" for x in ch_ids]))
+
+@bot.command(name="xoakenh", aliases=["removechannel"])
+@commands.has_permissions(administrator=True)
+async def cmd_removechannel(ctx):
+    """Xóa kênh hiện tại khỏi danh sách nhận thông báo giá"""
+    ch_id = str(ctx.channel.id)
+    ch_ids = [str(x) for x in get_alert_channel_ids()]
+    if ch_id in ch_ids:
+        ch_ids.remove(ch_id)
+        market.config["channel_id"] = ", ".join(ch_ids)
+        market.config["channel_ids"] = ch_ids
+        market.save_config()
+        await ctx.send(f"✅ Đã xóa kênh <#{ch_id}> khỏi danh sách nhận thông báo giá!\n📋 Các kênh còn lại: " + (", ".join([f"<#{x}>" for x in ch_ids]) if ch_ids else "Không có"))
+    else:
+        await ctx.send(f"⚠️ Kênh <#{ch_id}> không nằm trong danh sách nhận thông báo.")
+
+@bot.command(name="dskenh", aliases=["channels", "listchannel"])
+async def cmd_listchannel(ctx):
+    """Xem danh sách các kênh đang nhận thông báo giá"""
+    ch_ids = get_alert_channel_ids()
+    if not ch_ids:
+        await ctx.send("⚠️ Chưa có kênh nào được cấu hình nhận thông báo.")
+    else:
+        await ctx.send("📋 **Danh sách kênh nhận thông báo giá:**\n" + "\n".join([f"• <#{x}> (`{x}`)" for x in ch_ids]))
 
 # --- LỆNH BẢNG ĐIỆN TỬ THỊ TRƯỜNG LIVE (REALTIME DASHBOARD) ---
 @bot.command(name="live", aliases=["dashboard", "bangdien", "banglive"])
@@ -813,6 +859,26 @@ async def slash_check(interaction: discord.Interaction):
     await interaction.response.send_message("🔄 **Đã cập nhật thị trường!**\n" + chunks[0])
     for c in chunks[1:]:
         await interaction.followup.send(c)
+
+@bot.tree.command(name="kenh", description="Thêm hoặc đặt kênh hiện tại làm nơi nhận thông báo giá tự động")
+@app_commands.default_permissions(administrator=True)
+async def slash_kenh(interaction: discord.Interaction):
+    ch_id = str(interaction.channel_id)
+    ch_ids = [str(x) for x in get_alert_channel_ids()]
+    if ch_id not in ch_ids:
+        ch_ids.append(ch_id)
+    market.config["channel_id"] = ", ".join(ch_ids)
+    market.config["channel_ids"] = ch_ids
+    market.save_config()
+    await interaction.response.send_message(f"✅ Đã thêm kênh <#{ch_id}> vào danh sách nhận **Thông Báo Giá Tự Động**!\n📋 Các kênh hiện tại: " + ", ".join([f"<#{x}>" for x in ch_ids]))
+
+@bot.tree.command(name="dskenh", description="Xem danh sách các kênh đang nhận thông báo giá")
+async def slash_dskenh(interaction: discord.Interaction):
+    ch_ids = get_alert_channel_ids()
+    if not ch_ids:
+        await interaction.response.send_message("⚠️ Chưa có kênh nào được cấu hình nhận thông báo.", ephemeral=True)
+    else:
+        await interaction.response.send_message("📋 **Danh sách kênh nhận thông báo giá:**\n" + "\n".join([f"• <#{x}> (`{x}`)" for x in ch_ids]))
 
 def main():
     # 1. Kiểm tra và tự động cập nhật nếu có bản mới trên GitHub
