@@ -132,6 +132,7 @@ def format_all_categories_table(items):
         ("farming", "Nghề Nông Sản & Trồng Trọt (Farming)", "🌾"),
         ("mushrooms", "Nghề Hái Nấm (Mushrooms)", "🍄"),
         ("materials", "Vật Liệu & Chế Tạo (Materials)", "🧱"),
+        ("diving", "Nghề Lặn Biển & Đồ Cổ (Diving)", "🤿"),
     ]
     all_chunks = []
     total_count = len(items)
@@ -686,6 +687,15 @@ async def cmd_vatlieu(ctx):
     for c in chunks:
         await ctx.send(c)
 
+@bot.command(name="lan", aliases=["lanbien", "diving", "bien", "dolan"])
+async def cmd_lan(ctx):
+    """Xem toàn bộ giá tất cả các loại đồ Lặn Biển & Cổ Vật bán được"""
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("diving", "Nghề Lặn Biển & Đồ Cổ (Diving)", "🤿", items)
+    for c in chunks:
+        await ctx.send(c)
+
 # --- SLASH COMMANDS TỪNG NGHỀ ---
 @bot.tree.command(name="go", description="Xem toàn bộ giá tất cả các loại Gỗ bán được")
 async def slash_go(interaction: discord.Interaction):
@@ -741,6 +751,15 @@ async def slash_vatlieu(interaction: discord.Interaction):
     for c in chunks[1:]:
         await interaction.followup.send(c)
 
+@bot.tree.command(name="lan", description="Xem toàn bộ giá tất cả các loại đồ Lặn Biển & Cổ Vật")
+async def slash_lan(interaction: discord.Interaction):
+    market.update()
+    items = market.get_all_items()
+    chunks = format_category_table("diving", "Nghề Lặn Biển & Đồ Cổ (Diving)", "🤿", items)
+    await interaction.response.send_message(chunks[0])
+    for c in chunks[1:]:
+        await interaction.followup.send(c)
+
 @bot.command(name="nghe", aliases=["jobs", "chedo", "mode"])
 async def cmd_nghe(ctx):
     """Xem trạng thái theo dõi các danh mục mặt hàng"""
@@ -753,7 +772,8 @@ async def cmd_nghe(ctx):
         f"• 🎣 **Nghề Câu Cá (Fishing):** {'🟢 ĐANG BẬT' if is_all or 'fishing' in cats else '🔴 ĐANG TẮT'}\n"
         f"• 🌾 **Nghề Nông Sản (Farming):** {'🟢 ĐANG BẬT' if is_all or 'farming' in cats else '🔴 ĐANG TẮT'}\n"
         f"• 🍄 **Nghề Hái Nấm (Mushrooms):** {'🟢 ĐANG BẬT' if is_all or 'mushrooms' in cats or 'mushroom' in cats else '🔴 ĐANG TẮT'}\n"
-        f"• 🧱 **Vật Liệu & Chế Tạo (Materials):** {'🟢 ĐANG BẬT' if is_all or 'materials' in cats else '🔴 ĐANG TẮT'}\n\n"
+        f"• 🧱 **Vật Liệu & Chế Tạo (Materials):** {'🟢 ĐANG BẬT' if is_all or 'materials' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🤿 **Nghề Lặn Biển (Diving):** {'🟢 ĐANG BẬT' if is_all or 'diving' in cats else '🔴 ĐANG TẮT'}\n\n"
         "✨ *Bot đang ở chế độ **THEO DÕI TOÀN BỘ GIÁ THỊ TRƯỜNG** không giới hạn danh mục!*"
     )
     await ctx.send(msg)
@@ -769,7 +789,8 @@ async def slash_nghe(interaction: discord.Interaction):
         f"• 🎣 **Nghề Câu Cá (Fishing):** {'🟢 ĐANG BẬT' if is_all or 'fishing' in cats else '🔴 ĐANG TẮT'}\n"
         f"• 🌾 **Nghề Nông Sản (Farming):** {'🟢 ĐANG BẬT' if is_all or 'farming' in cats else '🔴 ĐANG TẮT'}\n"
         f"• 🍄 **Nghề Hái Nấm (Mushrooms):** {'🟢 ĐANG BẬT' if is_all or 'mushrooms' in cats or 'mushroom' in cats else '🔴 ĐANG TẮT'}\n"
-        f"• 🧱 **Vật Liệu & Chế Tạo (Materials):** {'🟢 ĐANG BẬT' if is_all or 'materials' in cats else '🔴 ĐANG TẮT'}\n\n"
+        f"• 🧱 **Vật Liệu & Chế Tạo (Materials):** {'🟢 ĐANG BẬT' if is_all or 'materials' in cats else '🔴 ĐANG TẮT'}\n"
+        f"• 🤿 **Nghề Lặn Biển (Diving):** {'🟢 ĐANG BẬT' if is_all or 'diving' in cats else '🔴 ĐANG TẮT'}\n\n"
         "✨ *Bot đang ở chế độ **THEO DÕI TOÀN BỘ GIÁ THỊ TRƯỜNG** không giới hạn danh mục!*"
     )
     await interaction.response.send_message(msg)
@@ -789,6 +810,7 @@ async def cmd_help(ctx):
         "• `!nongsan` (hoặc `/nongsan`): Xem bảng giá toàn bộ mặt hàng Nông sản\n"
         "• `!nam` (hoặc `/nam`): Xem bảng giá toàn bộ mặt hàng Nấm\n"
         "• `!vatlieu` (hoặc `/vatlieu`): Xem bảng giá toàn bộ mặt hàng Vật liệu/Chế tạo\n"
+        "• `!lan` (hoặc `/lan`): Xem bảng giá toàn bộ mặt hàng Lặn Biển & Đồ Cổ\n"
         "• `!gia <tên>` (hoặc `/gia`): Tra giá 1 món cụ thể (VD: `!gia sắt`, `!gia cá hồi`, `!gia nấm`)\n"
         "• `!max` (hoặc `/max`): Xem tất cả các món đang chạm MAX hoặc từ 80% MAX\n"
         "• `!nghe` (hoặc `/nghe`): Xem trạng thái theo dõi các danh mục\n"
