@@ -44,6 +44,8 @@ def get_cat_tag_and_icon(cat):
         return "🍄 [NẤM]", "🍄"
     elif cat == "materials":
         return "🧱 [VẬT LIỆU]", "🧱"
+    elif cat == "diving":
+        return "🤿 [LẶN BIỂN]", "🤿"
     return f"📦 [{str(cat).upper()}]", "📦"
 
 def format_item_card(item):
@@ -363,7 +365,7 @@ async def on_ready():
         try:
             ch = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
             if ch:
-                await ch.send("🟢 **Bot báo giá đã hoạt động!** (Chế độ: **Toàn bộ mặt hàng thị trường** - Gỗ, Đá, Cá, Nông sản, Nấm, Vật liệu...)")
+                await ch.send("🟢 **Bot báo giá đã hoạt động!** (Chế độ: **Toàn bộ mặt hàng thị trường** - Gỗ, Đá, Cá, Lặn biển, Nông sản, Nấm, Vật liệu...)")
                 print(f"[+] Đã thông báo bot hoạt động tới kênh: #{getattr(ch, 'name', ch_id)} (Server: {getattr(ch, 'guild', 'N/A')})", flush=True)
         except Exception as e:
             print(f"[!] Không thể gửi vào channel {ch_id}: {e}", flush=True)
